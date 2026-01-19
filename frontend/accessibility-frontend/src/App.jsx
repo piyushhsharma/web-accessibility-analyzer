@@ -12,8 +12,8 @@ function App() {
       return;
     }
 
-    setError("");
     setLoading(true);
+    setError("");
     setReport(null);
 
     try {
@@ -23,31 +23,42 @@ function App() {
         body: JSON.stringify({ url }),
       });
 
+      if (!res.ok) {
+        throw new Error("Server error");
+      }
+
       const data = await res.json();
+
+      // 🔒 SAFETY CHECK
+      if (!data || !Array.isArray(data.issues)) {
+        throw new Error("Invalid response");
+      }
+
       setReport(data);
     } catch (err) {
-      setError("Failed to analyze website");
+      console.error(err);
+      setError("Analysis failed. Backend error.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-900 p-4 text-white">
-      <h1 className="text-3xl font-bold mb-4">Web Accessibility Analyzer</h1>
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-6">
+      <h1 className="text-3xl font-bold mb-6">Web Accessibility Analyzer</h1>
 
       <input
         type="text"
-        placeholder="Enter website URL (https://example.com)"
+        className="w-full max-w-md p-2 rounded text-black mb-4"
+        placeholder="https://example.com"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
-        className="p-2 rounded text-black w-full max-w-md mb-4"
       />
 
       <button
         onClick={analyzeWebsite}
         disabled={loading}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold"
+        className="bg-blue-600 px-4 py-2 rounded hover:bg-blue-700"
       >
         {loading ? "Analyzing..." : "Analyze"}
       </button>
@@ -55,15 +66,14 @@ function App() {
       {error && <p className="text-red-400 mt-4">{error}</p>}
 
       {report && (
-        <div className="mt-6 w-full max-w-lg bg-gray-800 p-4 rounded shadow">
-          <h2 className="text-xl font-bold mb-2">Accessibility Report</h2>
+        <div className="mt-6 bg-gray-800 p-4 rounded w-full max-w-lg">
           <p><strong>URL:</strong> {report.url}</p>
           <p><strong>Score:</strong> {report.score}/100</p>
 
           <h3 className="mt-2 font-semibold">Issues</h3>
           <ul className="list-disc list-inside">
-            {report.issues.map((issue, index) => (
-              <li key={index}>{issue}</li>
+            {report.issues.map((issue, i) => (
+              <li key={i}>{issue}</li>
             ))}
           </ul>
         </div>
