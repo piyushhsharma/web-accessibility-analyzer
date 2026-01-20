@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"web-accessibility-analyzer-backend/models"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -44,8 +46,14 @@ func main() {
 
 	router.POST("/api/analyze", analyzeHandler)
 
-	log.Println("🚀 Server running on http://localhost:8080")
-	if err := router.Run(":8080"); err != nil {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
+
+	log.Printf("🚀 Server running on http://localhost%s", addr)
+	if err := router.Run(addr); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -101,43 +109,53 @@ func runAxeAnalysis(url string) (*models.Report, error) {
 
 	// JS to run axe and return JSON array
 	var result string
+	// NOTE: this returns a Promise; we must evaluate it with "awaitPromise: true"
+	// (chromedp.EvaluateAsDevTools) so Go receives the resolved string, not a JS object.
 	js := string(axeJS) + `
-	(async function(){
-		try {
-			const res = await axe.run();
-			return JSON.stringify(res.violations.map(v => ({
-				help: v.help,
-				impact: v.impact
-			})));
-		} catch(e) {
-			return JSON.stringify([]);
-		}
-	})();
+	(() => {
+		return axe.run()
+			.then(res => JSON.stringify(
+				res.violations.map(v => ({
+					id: v.id,
+					impact: v.impact,
+					help: v.help,
+					description: v.description,
+					helpUrl: v.helpUrl,
+					nodesAffected: (v.nodes || []).length
+				}))
+			))
+			.catch(() => JSON.stringify([]));
+	})()
 	`
 
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(url),
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(js, &result),
+		chromedp.EvaluateAsDevTools(js, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+			return p.WithAwaitPromise(true)
+		}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("axe evaluation failed: %v", err)
 	}
 
 	// Parse JSON array into Go slice
-	var violations []struct {
-		Help   string `json:"help"`
-		Impact string `json:"impact"`
-	}
+	var violations []models.Violation
 
 	if err := json.Unmarshal([]byte(result), &violations); err != nil {
 		return nil, fmt.Errorf("failed to parse axe output: %v", err)
 	}
 
 	issues := []string{}
+	impactCounts := map[string]int{}
 	for _, v := range violations {
-		issues = append(issues, fmt.Sprintf("%s (%s)", v.Help, v.Impact))
+		impact := v.Impact
+		if impact == "" {
+			impact = "unknown"
+		}
+		impactCounts[impact]++
+		issues = append(issues, fmt.Sprintf("%s (%s)", v.Help, impact))
 	}
 
 	// Simple scoring logic
@@ -147,8 +165,10 @@ func runAxeAnalysis(url string) (*models.Report, error) {
 	}
 
 	return &models.Report{
-		URL:    url,
-		Score:  score,
-		Issues: issues,
+		URL:          url,
+		Score:        score,
+		Issues:       issues,
+		Violations:   violations,
+		ImpactCounts: impactCounts,
 	}, nil
 }
